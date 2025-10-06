@@ -1,158 +1,94 @@
-# RAG System Setup Guide
+# Hotspot Paper RAG – Setup Guide
 
-## Prerequisites
+## 1) Prerequisites
 
-### 1. Install Dependencies
+- Python 3.10+
+- GPU optional (embeddings run faster with GPU-enabled PyTorch)
+- LM Studio installed and a chat server running
+  - Open LM Studio → Load a chat model (e.g., Hermes/Llama family) → Start local server
+  - Default URL used here: `http://127.0.0.1:1234/v1`
+
+## 2) Install
 
 ```bash
+# from project root
+python -m venv .venv
+. .venv/Scripts/activate  # Windows PowerShell: .venv\Scripts\Activate.ps1
+pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-### 2. Set Up LM Studio (Required for LLM functionality)
+## 3) Data
 
-**Download and Install LM Studio:**
+- Put the paper at `./data/Hotspot_Paper.pdf` (already present in this repo).
+- You can add more docs; ingestion supports `.pdf`, `.md`, `.txt`.
 
-1. Go to [https://lmstudio.ai/](https://lmstudio.ai/)
-2. Download and install LM Studio for your OS
-3. Open LM Studio
+## 4) Build the Vector Store (ChromaDB)
 
-**Load a Model:**
+Two options:
 
-1. In LM Studio, go to the "Models" tab
-2. Search for and download a model (recommended: `Llama-3.1-8B-Instruct` or similar)
-3. Go to the "Chat" tab
-4. Click "Start Server" (this starts the local API server)
-5. Note the server URL (default: `http://localhost:1234`)
-
-**Alternative Models:**
-
-- `Llama-3.1-8B-Instruct` (recommended, good balance)
-- `Llama-3.1-7B-Instruct` (smaller, faster)
-- `Mistral-7B-Instruct` (alternative option)
-
-### 3. Verify LM Studio Connection
-
-The system will automatically test the connection when you run it. You should see:
-
-```
-✓ Connected to LM Studio
-  Active model: llama-3.1-8b-instruct
-```
-
-If you see connection errors, make sure:
-
-- LM Studio is running
-- Server is started (click "Start Server" in LM Studio)
-- No firewall is blocking port 1234
-
-## Running the System
-
-### Option 1: Run the Example
+- Quick script (includes ingestion + Q&A demo):
 
 ```bash
-python example_usage.py
+python run_hotspot_rag.py
 ```
 
-### Option 2: Run Individual Components
+- Or run Phase 1 standalone:
 
-```python
-# Test Phase 1 (Data ingestion) - works without LM Studio
+```bash
 python rag_phase1.py
-
-# Test Phase 2 (Full RAG system) - requires LM Studio
-python rag_phase2.py
 ```
 
-### Option 3: Interactive Mode
+This creates a persistent Chroma database at `./hotspot_chroma_db`.
 
-```python
-from rag_phase1 import RAGDataPipeline, ChromaDBManager
-from rag_phase2 import LMStudioClient, RAGSystem
+## 5) Verify LM Studio connectivity
 
-# Initialize
-pipeline = RAGDataPipeline()
-pipeline.ingest_documents("./sample_docs")
-
-db_manager = ChromaDBManager()
-llm_client = LMStudioClient()
-rag = RAGSystem(db_manager, llm_client)
-
-# Start interactive mode
-rag.interactive_mode()
+```bash
+python check_model.py
 ```
 
-## Troubleshooting
+This should print the active model and confirm connectivity.
 
-### LM Studio Connection Issues
+## 6) Run the CLI demo
 
-- **Error**: "Could not connect to LM Studio"
+```bash
+python run_hotspot_rag.py
+```
 
-  - **Solution**: Make sure LM Studio is running and server is started
-  - **Check**: Go to LM Studio → Chat → Start Server
+You’ll see retrieval logs, chunk previews, and answers with citations.
 
-- **Error**: "No models loaded"
-  - **Solution**: Download a model in LM Studio → Models tab
+## 7) Run the Streamlit UI
 
-### Memory Issues
+```bash
+streamlit run streamlit_app.py
+```
 
-- **Error**: "CUDA out of memory" or similar
-  - **Solution**: Use a smaller model or reduce batch sizes
-  - **Alternative**: Use CPU-only mode in LM Studio
+- Sidebar lets you tune retrieval/reranking and safety.
+- Suggested questions are clickable.
+- The answer streams live; retrieved chunks and sources are shown.
 
-### Dependencies Issues
+## 8) Common issues
 
-- **Error**: "Module not found"
-  - **Solution**: Run `pip install -r requirements.txt`
+- “Couldn’t find relevant information”: ensure ingestion ran and `./hotspot_chroma_db` exists; lower min similarity in UI.
+- LM Studio not responding: verify server URL and that a model is loaded.
+- PDF extraction is empty: try a different PDF extractor or OCR (not included).
 
-### Sample Documents Not Found
+## 9) Useful paths
 
-- **Solution**: The system automatically creates sample documents if they don't exist
-- **Location**: `./sample_docs/` directory
+- Chroma DB: `./hotspot_chroma_db`
+- Data folder: `./data`
+- Streamlit app: `streamlit_app.py`
+- RAG core:
+  - Phase 1 (ingestion/embeddings): `rag_phase1.py`
+  - Phase 2 (LLM + guardrails): `rag_phase2.py`
 
-## Performance Tips
+## 10) Environment variables (optional)
 
-### For Better Performance:
+If you change LM Studio server:
 
-1. **Use GPU**: Enable GPU acceleration in LM Studio
-2. **Larger Models**: Use 8B+ models for better quality
-3. **Batch Processing**: Process multiple queries together
+```bash
+# Example
+set LMSTUDIO_URL=http://localhost:1234/v1
+```
 
-### For Faster Testing:
-
-1. **Smaller Models**: Use 7B models for faster responses
-2. **Reduce Chunks**: Lower `n_results` parameter
-3. **Disable Features**: Turn off reranking/compression for speed
-
-## System Requirements
-
-### Minimum:
-
-- 8GB RAM
-- 4GB free disk space
-- Internet connection (for model download)
-
-### Recommended:
-
-- 16GB RAM
-- 8GB+ VRAM (for GPU acceleration)
-- 10GB free disk space
-
-## Model Recommendations
-
-### For Development/Testing:
-
-- **Llama-3.1-7B-Instruct**: Fast, good quality
-- **Mistral-7B-Instruct**: Alternative option
-
-### For Production:
-
-- **Llama-3.1-8B-Instruct**: Better quality
-- **Llama-3.1-70B-Instruct**: Best quality (requires more resources)
-
-## Next Steps
-
-1. **Start Simple**: Run with default settings first
-2. **Test Features**: Try different combinations of reranking, compression, etc.
-3. **Add Your Data**: Replace sample documents with your own
-4. **Customize**: Adjust chunk sizes, embedding models, etc.
-5. **Deploy**: Consider using cloud APIs for production use
+Then pass it to `LMStudioClient` (or edit the Streamlit UI sidebar).

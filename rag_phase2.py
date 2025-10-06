@@ -430,7 +430,24 @@ class CitationVerifier:
         for citation in response_citations:
             if citation['type'] == 'source':
                 source = citation['source']
-                if source in available_sources:
+
+                # Fallback mapping: convert patterns like "Document N" to the actual filename
+                try:
+                    import re as _re
+                    doc_match = _re.match(r'(?i)document\s+(\d+)', source.strip())
+                except Exception:
+                    doc_match = None
+                if doc_match:
+                    idx = int(doc_match.group(1)) - 1
+                    if 0 <= idx < len(retrieved_chunks):
+                        mapped_source = retrieved_chunks[idx].get('metadata', {}).get('source', source)
+                        citation = {
+                            **citation,
+                            'source': mapped_source,
+                            'text': f"[Source: {mapped_source}]"
+                        }
+
+                if citation['source'] in available_sources:
                     verified_citations.append(citation)
                 else:
                     missing_citations.append(citation)
@@ -455,11 +472,16 @@ class CitationVerifier:
                         'content_preview': chunk.get('content', '')[:100] + '...'
                     })
         
+        # Coverage based on unique sources to avoid >100% anomalies
+        unique_verified_sources = {c['source'] for c in verified_citations}
+        unique_retrieved_sources = {c.get('metadata', {}).get('source', 'Unknown') for c in retrieved_chunks}
+        coverage = len(unique_verified_sources) / max(len(unique_retrieved_sources), 1)
+
         return {
             'verified_citations': verified_citations,
             'missing_citations': missing_citations,
             'uncited_chunks': uncited_chunks,
-            'citation_coverage': len(verified_citations) / max(len(retrieved_chunks), 1)
+            'citation_coverage': coverage
         }
     
     def generate_citation_report(self, verification_result: Dict[str, Any]) -> str:
@@ -523,7 +545,7 @@ class PromptBuilder:
             metadata = chunk['metadatas'][0] if isinstance(chunk.get('metadatas'), list) else chunk.get('metadata', {})
             source = metadata.get('source', 'Unknown')
             
-            context_sections.append(f"[Document {i}: {source}]\n{content}\n")
+            context_sections.append(f"[Document {i}] [Source: {source}]\n{content}\n")
         
         context = "\n".join(context_sections)
         
@@ -537,7 +559,7 @@ CONTEXT FROM DOCUMENTATION:
 INSTRUCTIONS:
 1. Answer the question using ONLY information from the context above
 2. If the answer is in the context, provide a clear and concise response
-3. ALWAYS cite your sources using the format [Source: document_name]
+3. For EVERY sentence that uses document information, append a citation using the exact filename shown in context, like [Source: filename]. Do NOT use "Document N". If a sentence uses multiple sources, cite them like [Source: fileA; fileB].
 4. If the information is NOT in the provided context, respond with: "I couldn't find this information in the provided documents."
 5. Do not make up information or use external knowledge
 6. Be specific and reference the relevant document when possible
@@ -563,7 +585,7 @@ CONTEXT FROM DOCUMENTATION:
 INSTRUCTIONS:
 1. Answer the question using ONLY information from the context above
 2. If the answer is in the context, provide a clear and concise response
-3. ALWAYS cite your sources using the format [Source: document_name]
+3. For EVERY sentence that uses document information, append a citation using the exact filename shown in context, like [Source: filename]. Do NOT use "Document N". If a sentence uses multiple sources, cite them like [Source: fileA; fileB].
 4. If the information is NOT in the provided context, respond with: "I couldn't find this information in the provided documents."
 5. Do not make up information or use external knowledge
 6. Be specific and reference the relevant document when possible
@@ -644,7 +666,7 @@ class RAGSystem:
         self.query_understanding = QueryUnderstanding(llm_client)
         self.citation_verifier = CitationVerifier()
     
-    def query(self, question: str, n_results: int = 5, stream: bool = False, use_reranking: bool = True, retrieve_n: int = 10, compress_chunks: bool = False, max_tokens_per_chunk: int = 200, structured_output: bool = False, analyze_query: bool = True, verify_citations: bool = True) -> Dict[str, Any]:
+    def query(self, question: str, n_results: int = 5, stream: bool = False, use_reranking: bool = True, retrieve_n: int = 10, compress_chunks: bool = False, max_tokens_per_chunk: int = 200, structured_output: bool = False, analyze_query: bool = True, verify_citations: bool = True, preview_chars: int = 300) -> Dict[str, Any]:
         """
         Main RAG query pipeline with optional reranking
         
@@ -715,11 +737,12 @@ class RAGSystem:
         # Step 2: Compress chunks if requested
         print("\n📝 Step 2: Processing chunks...")
         retrieved_chunks = []
-        for doc, meta, dist in zip(results['documents'][0], results['metadatas'][0], results['distances'][0]):
+        for doc, meta, dist, _id in zip(results['documents'][0], results['metadatas'][0], results['distances'][0], results['ids'][0]):
             retrieved_chunks.append({
                 'content': doc,
                 'metadata': meta,
-                'similarity': 1 - dist
+                'similarity': 1 - dist,
+                'id': _id
             })
         
         if compress_chunks:
@@ -727,6 +750,17 @@ class RAGSystem:
             retrieved_chunks = self.compressor.compress_chunks(retrieved_chunks, max_tokens_per_chunk)
             print(f"✓ Compressed {len(retrieved_chunks)} chunks")
         
+        # Print the exact chunks that will be sent to the LLM
+        print("📄 Top chunks sent to LLM:")
+        for idx, ch in enumerate(retrieved_chunks, 1):
+            src = ch.get('metadata', {}).get('source', 'Unknown')
+            cid = ch.get('id', 'N/A')
+            sim = ch.get('similarity', 0.0)
+            text = ch.get('content', '')
+            preview = (text[:preview_chars] + ("..." if len(text) > preview_chars else ""))
+            print(f"  [{idx}] source={src} | id={cid} | similarity={sim:.3f}")
+            print(f"      {preview}")
+
         prompt = self.prompt_builder.build_rag_prompt(final_question, retrieved_chunks, structured_output)
         print("✓ Prompt ready\n")
         

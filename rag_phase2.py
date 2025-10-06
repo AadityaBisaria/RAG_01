@@ -521,6 +521,37 @@ class CitationVerifier:
         
         return "\n".join(report)
 
+    def estimate_sentence_factuality(self, response: str) -> List[str]:
+        """Split response into sentences that appear factual (simple heuristic)."""
+        # Simple split on periods/question marks/exclamation; trim empties
+        parts = re.split(r'(?<=[.!?])\s+', response)
+        sentences = [p.strip() for p in parts if p.strip()]
+        # Heuristic: include sentences that end with '.' and contain alphabetic chars
+        factual = [s for s in sentences if s.endswith('.') and re.search(r'[A-Za-z]', s)]
+        return factual
+
+    def has_profanity(self, text: str) -> bool:
+        """Very small profanity heuristic; replace/extend with better model as needed."""
+        denylist = {
+            'damn', 'hell', 'shit', 'fuck', 'bitch', 'bastard'
+        }
+        lowered = text.lower()
+        return any(f" {w} " in f" {lowered} " for w in denylist)
+
+    def sentence_citations_map(self, response: str) -> Dict[str, List[str]]:
+        """Map each sentence to the list of cited sources it includes."""
+        sentences = self.estimate_sentence_factuality(response)
+        mapping: Dict[str, List[str]] = {}
+        for s in sentences:
+            cites = re.findall(r'\[Source:\s*([^\]]+)\]', s)
+            # support multi-source like [Source: A; B]
+            sources: List[str] = []
+            for c in cites:
+                parts = [p.strip() for p in c.split(';') if p.strip()]
+                sources.extend(parts)
+            mapping[s] = sources
+        return mapping
+
 
 class PromptBuilder:
     """Builds optimized prompts for RAG system"""
@@ -562,7 +593,8 @@ INSTRUCTIONS:
 3. For EVERY sentence that uses document information, append a citation using the exact filename shown in context, like [Source: filename]. Do NOT use "Document N". If a sentence uses multiple sources, cite them like [Source: fileA; fileB].
 4. If the information is NOT in the provided context, respond with: "I couldn't find this information in the provided documents."
 5. Do not make up information or use external knowledge
-6. Be specific and reference the relevant document when possible
+6. REFUSAL POLICY: If the user asks for unsafe, harmful, or disallowed content (e.g., illegal activities, self-harm instructions, hate/harassment, explicit sexual content), politely refuse and explain you cannot help with that request.
+7. Be specific and reference the relevant document when possible
 
 QUESTION: {query}
 
@@ -588,7 +620,8 @@ INSTRUCTIONS:
 3. For EVERY sentence that uses document information, append a citation using the exact filename shown in context, like [Source: filename]. Do NOT use "Document N". If a sentence uses multiple sources, cite them like [Source: fileA; fileB].
 4. If the information is NOT in the provided context, respond with: "I couldn't find this information in the provided documents."
 5. Do not make up information or use external knowledge
-6. Be specific and reference the relevant document when possible
+6. REFUSAL POLICY: If the user asks for unsafe, harmful, or disallowed content (e.g., illegal activities, self-harm instructions, hate/harassment, explicit sexual content), politely refuse and explain you cannot help with that request.
+7. Be specific and reference the relevant document when possible
 
 QUESTION: {query}
 
@@ -615,6 +648,25 @@ ANSWER:"""
                 unique_citations.append(cite)
         
         return response, unique_citations
+
+    @staticmethod
+    def strip_document_number_references(response: str) -> str:
+        """Remove occurrences of 'Document N' from prose while preserving [Source: filename] citations."""
+        import re as _re
+        cleaned = response
+        # (Document N, -> (
+        cleaned = _re.sub(r"\(\s*Document\s+\d+\s*,\s*", "(", cleaned)
+        # (Document N) -> ''
+        cleaned = _re.sub(r"\(\s*Document\s+\d+\s*\)", "", cleaned)
+        # , Document N) -> )
+        cleaned = _re.sub(r",\s*Document\s+\d+\s*\)", ")", cleaned)
+        # Document N, -> ''
+        cleaned = _re.sub(r"\bDocument\s+\d+\s*,\s*", "", cleaned)
+        # standalone Document N -> ''
+        cleaned = _re.sub(r"\bDocument\s+\d+\b", "", cleaned)
+        # Normalize double spaces created by removals
+        cleaned = _re.sub(r"\s{2,}", " ", cleaned).strip()
+        return cleaned
     
     @staticmethod
     def parse_structured_response(response: str) -> Dict[str, Any]:
@@ -666,7 +718,7 @@ class RAGSystem:
         self.query_understanding = QueryUnderstanding(llm_client)
         self.citation_verifier = CitationVerifier()
     
-    def query(self, question: str, n_results: int = 5, stream: bool = False, use_reranking: bool = True, retrieve_n: int = 10, compress_chunks: bool = False, max_tokens_per_chunk: int = 200, structured_output: bool = False, analyze_query: bool = True, verify_citations: bool = True, preview_chars: int = 300) -> Dict[str, Any]:
+    def query(self, question: str, n_results: int = 5, stream: bool = False, use_reranking: bool = True, retrieve_n: int = 10, compress_chunks: bool = False, max_tokens_per_chunk: int = 200, structured_output: bool = False, analyze_query: bool = True, verify_citations: bool = True, preview_chars: int = 300, min_similarity: float = 0.05, min_docs: int = 1, enforce_safety: bool = True, min_unique_source_coverage: float = 0.67, regenerate_on_fail: bool = True, max_regenerations: int = 1) -> Dict[str, Any]:
         """
         Main RAG query pipeline with optional reranking
         
@@ -749,8 +801,37 @@ class RAGSystem:
             print("  Compressing chunks to reduce context usage...")
             retrieved_chunks = self.compressor.compress_chunks(retrieved_chunks, max_tokens_per_chunk)
             print(f"✓ Compressed {len(retrieved_chunks)} chunks")
+
+        # Show retrieved chunks (for transparency even if we later block on thresholds)
+        print("📄 Retrieved top chunks:")
+        for idx, ch in enumerate(retrieved_chunks, 1):
+            src = ch.get('metadata', {}).get('source', 'Unknown')
+            cid = ch.get('id', 'N/A')
+            sim = ch.get('similarity', 0.0)
+            text = ch.get('content', '')
+            preview = (text[:preview_chars] + ("..." if len(text) > preview_chars else ""))
+            print(f"  [{idx}] source={src} | id={cid} | similarity={sim:.3f}")
+            print(f"      {preview}")
+
+        # Retrieval sanity checks
+        if enforce_safety:
+            if len(retrieved_chunks) < min_docs:
+                print(f"⚠️  Retrieval blocked: min_docs={min_docs}, retrieved={len(retrieved_chunks)}")
+                return {
+                    'answer': "I couldn't find any relevant information in the provided documents.",
+                    'citations': [],
+                    'retrieved_chunks': retrieved_chunks
+                }
+            top_similarity = max((c.get('similarity', 0.0) for c in retrieved_chunks), default=0.0)
+            if top_similarity < min_similarity:
+                print(f"⚠️  Retrieval blocked: top_similarity={top_similarity:.3f} < min_similarity={min_similarity:.3f}")
+                return {
+                    'answer': "I couldn't find any relevant information in the provided documents.",
+                    'citations': [],
+                    'retrieved_chunks': retrieved_chunks
+                }
         
-        # Print the exact chunks that will be sent to the LLM
+        # Print the chunks being sent to the LLM
         print("📄 Top chunks sent to LLM:")
         for idx, ch in enumerate(retrieved_chunks, 1):
             src = ch.get('metadata', {}).get('source', 'Unknown')
@@ -789,6 +870,8 @@ class RAGSystem:
             print(f"✓ Confidence: {confidence}")
         else:
             _, citations = self.prompt_builder.extract_citations(answer)
+            # Strip any 'Document N' references from the prose for cleaner output
+            answer = self.prompt_builder.strip_document_number_references(answer)
         
         # Step 5: Verify citations (optional)
         citation_report = None
@@ -797,6 +880,92 @@ class RAGSystem:
             verification_result = self.citation_verifier.verify_citations_against_chunks(answer, retrieved_chunks)
             citation_report = self.citation_verifier.generate_citation_report(verification_result)
             print(f"✓ Citation coverage: {verification_result['citation_coverage']:.1%}")
+
+            # Enforce coverage threshold
+            if enforce_safety and verification_result['citation_coverage'] < min_unique_source_coverage:
+                if regenerate_on_fail and max_regenerations > 0:
+                    print("⚠️  Low citation coverage. Regenerating with stricter settings...\n")
+                    if stream:
+                        print("Final answer (regenerated): ", end='', flush=True)
+                        regen_full = ""
+                        for token in self.llm.generate_stream(prompt):
+                            print(token, end='', flush=True)
+                            regen_full += token
+                        print("\n")
+                        answer = regen_full
+                    else:
+                        stricter_answer = self.llm.generate(prompt, temperature=0.0, max_tokens=800)
+                        answer = stricter_answer
+                    # Re-verify after regeneration
+                    verification_result = self.citation_verifier.verify_citations_against_chunks(answer, retrieved_chunks)
+                    citation_report = self.citation_verifier.generate_citation_report(verification_result)
+                    print(f"✓ Citation coverage after regeneration: {verification_result['citation_coverage']:.1%}")
+                else:
+                    answer = "I couldn't find sufficient grounded evidence in the provided documents to answer confidently."
+
+            # Per-sentence citation enforcement and quick n-gram overlap check
+            if enforce_safety:
+                sent_map = self.citation_verifier.sentence_citations_map(answer)
+                # require at least one citation for each factual sentence
+                missing_cited = [s for s, cites in sent_map.items() if len(cites) == 0]
+                if missing_cited and regenerate_on_fail and max_regenerations > 0:
+                    print("⚠️  Some sentences lack citations. Regenerating with stricter settings...\n")
+                    if stream:
+                        print("Final answer (regenerated): ", end='', flush=True)
+                        regen_full = ""
+                        for token in self.llm.generate_stream(prompt):
+                            print(token, end='', flush=True)
+                            regen_full += token
+                        print("\n")
+                        answer = regen_full
+                    else:
+                        stricter_answer = self.llm.generate(prompt, temperature=0.0, max_tokens=800)
+                        answer = stricter_answer
+                    sent_map = self.citation_verifier.sentence_citations_map(answer)
+
+                # quick n-gram overlap (top 10 tokens) against any cited chunk
+                import re as _re
+                def tokenize(s: str) -> List[str]:
+                    return [t for t in _re.findall(r"[A-Za-z0-9']+", s.lower()) if len(t) > 2]
+
+                chunks_by_source = {}
+                for ch in retrieved_chunks:
+                    src = ch.get('metadata', {}).get('source', 'Unknown')
+                    chunks_by_source.setdefault(src, []).append(ch.get('content', ''))
+
+                low_overlap_sentences = []
+                for s, cites in sent_map.items():
+                    if not cites:
+                        continue
+                    s_tokens = tokenize(s)[:10]
+                    if not s_tokens:
+                        continue
+                    overlap_found = False
+                    for cite in cites:
+                        for ch_text in chunks_by_source.get(cite, []):
+                            ch_tokens = set(tokenize(ch_text))
+                            common = sum(1 for t in s_tokens if t in ch_tokens)
+                            if common >= max(2, len(s_tokens) // 3):
+                                overlap_found = True
+                                break
+                        if overlap_found:
+                            break
+                    if not overlap_found:
+                        low_overlap_sentences.append(s)
+
+                if low_overlap_sentences and regenerate_on_fail and max_regenerations > 0:
+                    print("⚠️  Low evidence overlap for some sentences. Regenerating with stricter settings...\n")
+                    if stream:
+                        print("Final answer (regenerated): ", end='', flush=True)
+                        regen_full = ""
+                        for token in self.llm.generate_stream(prompt):
+                            print(token, end='', flush=True)
+                            regen_full += token
+                        print("\n")
+                        answer = regen_full
+                    else:
+                        stricter_answer = self.llm.generate(prompt, temperature=0.0, max_tokens=800)
+                        answer = stricter_answer
         
         print(f"{'='*60}\n")
         

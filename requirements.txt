@@ -17,3 +17,6 @@ requests>=2.28.0
 # Optional: For additional document formats
 # python-docx>=0.8.11  # For Word documents
 # beautifulsoup4>=4.11.0  # For HTML parsing
+
+# UI
+streamlit>=1.31.0

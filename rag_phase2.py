@@ -718,7 +718,7 @@ class RAGSystem:
         self.query_understanding = QueryUnderstanding(llm_client)
         self.citation_verifier = CitationVerifier()
     
-    def query(self, question: str, n_results: int = 5, stream: bool = False, use_reranking: bool = True, retrieve_n: int = 10, compress_chunks: bool = False, max_tokens_per_chunk: int = 200, structured_output: bool = False, analyze_query: bool = True, verify_citations: bool = True, preview_chars: int = 300, min_similarity: float = 0.05, min_docs: int = 1, enforce_safety: bool = True, min_unique_source_coverage: float = 0.67, regenerate_on_fail: bool = True, max_regenerations: int = 1) -> Dict[str, Any]:
+    def query(self, question: str, n_results: int = 5, stream: bool = False, use_reranking: bool = True, retrieve_n: int = 10, compress_chunks: bool = False, max_tokens_per_chunk: int = 200, structured_output: bool = False, analyze_query: bool = True, verify_citations: bool = True, preview_chars: int = 300, min_similarity: float = 0.05, min_docs: int = 1, enforce_safety: bool = True, min_unique_source_coverage: float = 0.67, regenerate_on_fail: bool = True, max_regenerations: int = 1, on_token: Optional[Any] = None) -> Dict[str, Any]:
         """
         Main RAG query pipeline with optional reranking
         
@@ -852,9 +852,16 @@ class RAGSystem:
             print("Answer: ", end='', flush=True)
             full_response = ""
             for token in self.llm.generate_stream(prompt):
-                print(token, end='', flush=True)
+                if on_token is not None:
+                    try:
+                        on_token(token)
+                    except Exception:
+                        pass
+                else:
+                    print(token, end='', flush=True)
                 full_response += token
-            print("\n")
+            if on_token is None:
+                print("\n")
             answer = full_response
         else:
             answer = self.llm.generate(prompt)
@@ -889,9 +896,16 @@ class RAGSystem:
                         print("Final answer (regenerated): ", end='', flush=True)
                         regen_full = ""
                         for token in self.llm.generate_stream(prompt):
-                            print(token, end='', flush=True)
+                            if on_token is not None:
+                                try:
+                                    on_token(token)
+                                except Exception:
+                                    pass
+                            else:
+                                print(token, end='', flush=True)
                             regen_full += token
-                        print("\n")
+                        if on_token is None:
+                            print("\n")
                         answer = regen_full
                     else:
                         stricter_answer = self.llm.generate(prompt, temperature=0.0, max_tokens=800)
@@ -914,9 +928,16 @@ class RAGSystem:
                         print("Final answer (regenerated): ", end='', flush=True)
                         regen_full = ""
                         for token in self.llm.generate_stream(prompt):
-                            print(token, end='', flush=True)
+                            if on_token is not None:
+                                try:
+                                    on_token(token)
+                                except Exception:
+                                    pass
+                            else:
+                                print(token, end='', flush=True)
                             regen_full += token
-                        print("\n")
+                        if on_token is None:
+                            print("\n")
                         answer = regen_full
                     else:
                         stricter_answer = self.llm.generate(prompt, temperature=0.0, max_tokens=800)
@@ -959,9 +980,16 @@ class RAGSystem:
                         print("Final answer (regenerated): ", end='', flush=True)
                         regen_full = ""
                         for token in self.llm.generate_stream(prompt):
-                            print(token, end='', flush=True)
+                            if on_token is not None:
+                                try:
+                                    on_token(token)
+                                except Exception:
+                                    pass
+                            else:
+                                print(token, end='', flush=True)
                             regen_full += token
-                        print("\n")
+                        if on_token is None:
+                            print("\n")
                         answer = regen_full
                     else:
                         stricter_answer = self.llm.generate(prompt, temperature=0.0, max_tokens=800)

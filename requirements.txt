@@ -1,0 +1,19 @@
+# RAG System Dependencies
+
+# Core RAG components
+chromadb>=0.4.0
+sentence-transformers>=2.2.0
+langchain>=0.1.0
+
+# PDF processing
+PyPDF2>=3.0.0
+
+# HTTP requests for LM Studio
+requests>=2.28.0
+
+# Optional: For better PDF processing
+# pypdf>=3.0.0  # Alternative to PyPDF2
+
+# Optional: For additional document formats
+# python-docx>=0.8.11  # For Word documents
+# beautifulsoup4>=4.11.0  # For HTML parsing
